@@ -1,0 +1,7 @@
+MTASession.requests max_count:256
+MTAResponse.responses max_count:256
+OTRequest.pk0 max_size:65
+OTResponse.e0 max_size:32
+OTResponse.e1 max_size:32
+Handshake.public_c max_size:65
+Handshake.bob_gy max_size:65

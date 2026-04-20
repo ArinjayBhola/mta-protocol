@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+message OTRequest {
+    bytes pk0 = 1; // Alice's public key (curve point)
+}
+
+message OTResponse {
+    bytes e0 = 1; // Encrypted field element 0
+    bytes e1 = 2; // Encrypted field element 1
+}
+
+message MTASession {
+    repeated OTRequest requests = 1;
+}
+
+message MTAResponse {
+    repeated OTResponse responses = 1;
+}
+
+message Handshake {
+    bytes public_c = 1; // Public point C for Naor-Pinkas
+    bytes bob_gy = 2;   // Bob's public key g^y
+}

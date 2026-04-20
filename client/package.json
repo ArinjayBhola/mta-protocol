@@ -1,0 +1,20 @@
+{
+  "name": "mta-client",
+  "version": "1.0.0",
+  "description": "MTA Client using COT",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "proto": "npx pbjs -t static-module -w commonjs -o src/proto/mta.js ../proto/mta.proto && npx pbts -o src/proto/mta.d.ts src/proto/mta.js"
+  },
+  "dependencies": {
+    "protobufjs": "^7.2.5",
+    "bigint-mod-arith": "^3.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.2",
+    "typescript": "^5.2.2",
+    "protobufjs-cli": "^1.1.2"
+  }
+}
