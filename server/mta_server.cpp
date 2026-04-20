@@ -12,7 +12,7 @@ MTAServer::MTAServer(boost::asio::io_context& io_context, short port)
     CryptoUtils::generate_random_32(rand_bytes);
     CryptoUtils::bytes_to_bn(rand_bytes, &share_b);
     
-    std::cout << "[Server] share b: ";
+    std::cout << "[Server] multiplicative share x: ";
     for(int i=0; i<32; i++) printf("%02x", rand_bytes[i]);
     std::cout << std::endl;
 }
@@ -22,11 +22,7 @@ void MTAServer::run_with_socket(tcp::socket& socket) {
 }
 
 void MTAServer::handle_client(tcp::socket socket) {
-    try {
-        perform_mta(socket);
-    } catch (std::exception& e) {
-        std::cerr << "Exception: " << e.what() << std::endl;
-    }
+    try { perform_mta(socket); } catch (std::exception& e) { std::cerr << "Err: " << e.what() << std::endl; }
 }
 
 void MTAServer::perform_mta(tcp::socket& socket) {
@@ -34,6 +30,7 @@ void MTAServer::perform_mta(tcp::socket& socket) {
 
     uint8_t secret_a[32];
     CryptoUtils::generate_random_32(secret_a);
+    bignum256 a; CryptoUtils::bytes_to_bn(secret_a, &a);
     
     curve_point A;
     scalar_multiply(&secp256k1, secret_a, &A);
@@ -67,66 +64,55 @@ void MTAServer::perform_mta(tcp::socket& socket) {
     MTAResponse response = MTAResponse_init_default;
     response.responses_count = 256;
     
-    bignum256 total_r;
-    bn_zero(&total_r);
+    bignum256 total_u; bn_zero(&total_u);
+    bignum256 power_of_2; bn_one(&power_of_2);
 
     for (int i = 0; i < 256; ++i) {
         curve_point B;
         bn_read_be(session.requests[i].pk0.bytes + 1, &B.x);
         bn_read_be(session.requests[i].pk0.bytes + 33, &B.y);
 
-        curve_point K0_point;
+        curve_point K0_point, K1_point;
         point_multiply(&secp256k1, secret_a, &B, &K0_point);
-        uint8_t K0_raw[64];
-        bn_write_be(&K0_point.x, K0_raw);
-        bn_write_be(&K0_point.y, K0_raw + 32);
         
         curve_point negA = A;
-        bignum256 prime;
-        bn_read_be(secp256k1.prime, &prime);
+        bignum256 prime; bn_read_be(secp256k1.prime, &prime);
         bn_sub(&prime, &negA.y, &negA.y); 
         curve_point B_minus_A;
         point_add(&secp256k1, &B, &negA, &B_minus_A);
-        
-        curve_point K1_point;
         point_multiply(&secp256k1, secret_a, &B_minus_A, &K1_point);
-        uint8_t K1_raw[64];
-        bn_write_be(&K1_point.x, K1_raw);
-        bn_write_be(&K1_point.y, K1_raw + 32);
 
-        uint8_t key0[32], key1[32];
-        sha256_Raw(K0_raw, 64, key0);
-        sha256_Raw(K1_raw, 64, key1);
+        uint8_t k0_x[32], k1_x[32], key0[32], key1[32];
+        bn_write_be(&K0_point.x, k0_x);
+        bn_write_be(&K1_point.x, k1_x);
+        sha256_Raw(k0_x, 32, key0);
+        sha256_Raw(k1_x, 32, key1);
 
-        uint8_t r_i_bytes[32];
-        CryptoUtils::generate_random_32(r_i_bytes);
-        bignum256 r_i;
-        CryptoUtils::bytes_to_bn(r_i_bytes, &r_i);
-        bn_addmod(&total_r, &r_i, &n, &total_r);
+        bignum256 ui, ui_plus_x, k0_bn, k1_bn, e0, e1;
+        uint8_t ui_bytes[32]; CryptoUtils::generate_random_32(ui_bytes);
+        CryptoUtils::bytes_to_bn(ui_bytes, &ui);
+        bn_addmod(&ui, &share_b, &n, &ui_plus_x);
 
-        bignum256 b_times_2i = share_b;
-        for(int j=0; j<i; j++) {
-            bn_addmod(&b_times_2i, &b_times_2i, &n, &b_times_2i);
-        }
-        
-        bignum256 m0 = r_i;
-        bignum256 m1;
-        bn_addmod(&r_i, &b_times_2i, &n, &m1);
-
-        bignum256 k0_bn, k1_bn, e0, e1;
         CryptoUtils::bytes_to_bn(key0, &k0_bn);
         CryptoUtils::bytes_to_bn(key1, &k1_bn);
-        bn_addmod(&k0_bn, &m0, &n, &e0);
-        bn_addmod(&k1_bn, &m1, &n, &e1);
+        bn_addmod(&k0_bn, &ui, &n, &e0);
+        bn_addmod(&k1_bn, &ui_plus_x, &n, &e1);
 
         response.responses[i].e0.size = 32;
         CryptoUtils::bn_to_bytes(&e0, response.responses[i].e0.bytes);
         response.responses[i].e1.size = 32;
         CryptoUtils::bn_to_bytes(&e1, response.responses[i].e1.bytes);
+
+        // Weighted sum for Alice: U = - sum(2^i * Ui)
+        bignum256 weighted_ui;
+        bn_multiply(&ui, &power_of_2, &n, &weighted_ui);
+        bn_addmod(&total_u, &weighted_ui, &n, &total_u);
+        
+        bn_addmod(&power_of_2, &power_of_2, &n, &power_of_2); // 2^i
     }
 
     bignum256 zero; bn_zero(&zero);
-    bn_submod(&zero, &total_r, &n, &additive_share_y);
+    bn_submod(&zero, &total_u, &n, &additive_share_y);
 
     std::vector<uint8_t> resp_buffer(32000);
     stream = pb_ostream_from_buffer(resp_buffer.data(), resp_buffer.size());
@@ -136,9 +122,8 @@ void MTAServer::perform_mta(tcp::socket& socket) {
     boost::asio::write(socket, boost::asio::buffer(&size, 4));
     boost::asio::write(socket, boost::asio::buffer(resp_buffer.data(), size));
 
-    std::cout << "[Server] MTA complete. Additive share y: ";
-    uint8_t y_bytes[32];
-    CryptoUtils::bn_to_bytes(&additive_share_y, y_bytes);
-    for(int i=0; i<32; i++) printf("%02x", y_bytes[i]);
+    std::cout << "[Server] additive share U: ";
+    uint8_t u_bytes[32]; CryptoUtils::bn_to_bytes(&additive_share_y, u_bytes);
+    for(int i=0; i<32; i++) printf("%02x", u_bytes[i]);
     std::cout << std::endl;
 }
